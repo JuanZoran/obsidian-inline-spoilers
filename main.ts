@@ -1,4 +1,5 @@
 import { syntaxTree } from '@codemirror/language';
+import { SyntaxNode } from '@lezer/common';
 import { Extension, RangeSetBuilder } from '@codemirror/state';
 import {
 	Decoration,
@@ -11,46 +12,117 @@ import {
 } from '@codemirror/view';
 import { App, Editor, Plugin, PluginSettingTab, Setting, Workspace } from 'obsidian';
 
-const SPOILER_REGEX = /\|\|(.+?)\|\|/g;
+const SPOILER_REGEX = /\|\|([\s\S]+?)\|\|/g;
 
 /*
  * Reading mode
  */
-const processNode = (node: Node) => {
-	if (node.nodeType === Node.TEXT_NODE) {
-		if (!node.textContent || !node.parentNode) return;
+type SpoilerSlice = {
+	node: Text;
+	isDelimiter: boolean;
+};
 
-		// Split the text node content by the spoiler pattern, keeping the delimiters
-		const parts = node.textContent.split(/(\|\|[^|]+\|\|)/g);
-		const fragment = document.createDocumentFragment();
+const isTextNodeInIgnoredWrapper = (textNode: Text) => {
+	const parent = textNode.parentElement;
+	if (!parent) return false;
 
-		for (const part of parts) {
-			if (SPOILER_REGEX.test(part)) {
-				// It's a spoiler, create a span for it
-				const spoilerText = part.slice(2, -2); // Remove the || delimiters
-				const spoilerSpan = createSpan({ cls: "inline_spoilers-spoiler", text: spoilerText });
-				fragment.appendChild(spoilerSpan);
-			} else {
-				// It's regular text, create a text node for it
-				const textNode = document.createTextNode(part);
-				fragment.appendChild(textNode);
-			}
+	if (parent.closest(".inline_spoilers-spoiler")) return true;
+	if (parent.closest("code, pre, samp, kbd")) return true;
+	if (parent.closest(".cm-inline-code, .math, .latex")) return true;
+
+	return false;
+};
+
+const splitTextNodeByDelimiter = (textNode: Text, slices: SpoilerSlice[]) => {
+	let node: Text | null = textNode;
+
+	while (node) {
+		const delimiterIndex = node.data.indexOf("||");
+
+		if (delimiterIndex === -1) {
+			slices.push({ node, isDelimiter: false });
+			node = null;
+			continue;
 		}
 
-		// Replace the original text node with the new fragment
-		node.parentNode.replaceChild(fragment, node);
-	} else if (node.nodeType === Node.ELEMENT_NODE) {
-		// For element nodes, recursively process their child nodes
-		Array.from(node.childNodes).forEach(processNode);
+		if (delimiterIndex > 0) {
+			const after = node.splitText(delimiterIndex);
+			slices.push({ node, isDelimiter: false });
+			node = after;
+			continue;
+		}
+
+		// delimiter is at the beginning of the text node
+		if (node.data.length > 2) {
+			const after = node.splitText(2);
+			slices.push({ node, isDelimiter: true });
+			node = after;
+		} else {
+			slices.push({ node, isDelimiter: true });
+			node = null;
+		}
 	}
-}
+};
+
+const wrapSpoilers = (element: HTMLElement) => {
+	// Collect text nodes first to avoid mutating the tree mid-iteration
+	const textNodes: Text[] = [];
+	const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+	let current: Node | null;
+
+	while ((current = walker.nextNode())) {
+		const textNode = current as Text;
+
+		if (isTextNodeInIgnoredWrapper(textNode)) {
+			continue;  // skip already processed text or disallowed wrappers
+		}
+
+		textNodes.push(textNode);
+	}
+
+	const slices: SpoilerSlice[] = [];
+	for (const textNode of textNodes) {
+		splitTextNodeByDelimiter(textNode, slices);
+	}
+
+	let openDelimiter: Text | null = null;
+
+	for (const slice of slices) {
+		if (!slice.isDelimiter) {
+			continue;
+		}
+
+		if (!openDelimiter) {
+			openDelimiter = slice.node;
+			continue;
+		}
+
+		// We found a closing delimiter; wrap everything in between
+		const startDelimiter = openDelimiter;
+		const endDelimiter = slice.node;
+
+		const range = document.createRange();
+		range.setStartAfter(startDelimiter);
+		range.setEndBefore(endDelimiter);
+
+		if (!range.collapsed) {
+			const contents = range.extractContents();
+			const spoilerSpan = createSpan({ cls: "inline_spoilers-spoiler" });
+			spoilerSpan.appendChild(contents);
+			endDelimiter.parentNode?.insertBefore(spoilerSpan, endDelimiter);
+		}
+
+		startDelimiter.parentNode?.removeChild(startDelimiter);
+		endDelimiter.parentNode?.removeChild(endDelimiter);
+		openDelimiter = null;
+	}
+};
 
 const updateReadingMode = (element: HTMLElement, plugin: InlineSpoilerPlugin) => {
 	const allowedElems = element.findAll("p, li, h1, h2, h3, h4, h5, h6, blockquote, em, strong, b, i, a, th, td");
 
 	for (const elem of allowedElems) {
-		// Process each child node of the element
-		Array.from(elem.childNodes).forEach(processNode);
+		wrapSpoilers(elem as HTMLElement);
 	}
 
 	const spoilers = element.findAll(".inline_spoilers-spoiler");
@@ -67,9 +139,14 @@ const unloadReadingMode = (workspace: Workspace) => {
 	const spoilers = Array.from(workspace.containerEl.querySelectorAll(".inline_spoilers-spoiler")) as HTMLElement[];
 	for (const spoiler of spoilers) {
 		const parent = spoiler.parentNode;
-		const spoilerText = document.createTextNode(`||${spoiler.innerText}||`);
+		const fragment = document.createDocumentFragment();
+		fragment.appendChild(document.createTextNode("||"));
+		while (spoiler.firstChild) {
+			fragment.appendChild(spoiler.firstChild);
+		}
+		fragment.appendChild(document.createTextNode("||"));
 		if (parent) {
-			parent.replaceChild(spoilerText, spoiler);
+			parent.replaceChild(fragment, spoiler);
 		}
 	}
 }
@@ -79,21 +156,19 @@ const unloadReadingMode = (workspace: Workspace) => {
 /*
  * Editor mode
  */
-const spoilerDecoration = Decoration.mark({
-	class: "inline_spoilers-editor-spoiler",
-	tagName: "span",
-});
-
-const spoilerDelimiterDecoration = Decoration.mark({
-	class: "inline_spoilers-editor-spoiler-delimiter",
-	tagName: "span",
-});
-
 class SpoilerEditorPlugin implements PluginValue {
 	decorations: DecorationSet;
+	view: EditorView;
+	mouseOverHandler: (event: MouseEvent) => void;
+	mouseOutHandler: (event: MouseEvent) => void;
 
 	constructor(view: EditorView) {
+		this.view = view;
 		this.decorations = this.buildDecorations(view);
+		this.mouseOverHandler = this.handleMouseOver.bind(this);
+		this.mouseOutHandler = this.handleMouseOut.bind(this);
+		this.view.dom.addEventListener("mouseover", this.mouseOverHandler);
+		this.view.dom.addEventListener("mouseout", this.mouseOutHandler);
 	}
 
 	update(update: ViewUpdate) {
@@ -102,36 +177,87 @@ class SpoilerEditorPlugin implements PluginValue {
 		}
 	}
 
-	destroy() { }
+	destroy() {
+		this.view.dom.removeEventListener("mouseover", this.mouseOverHandler);
+		this.view.dom.removeEventListener("mouseout", this.mouseOutHandler);
+	}
+
+	handleMouseOver(event: MouseEvent) {
+		const target = event.target as HTMLElement | null;
+		const el = target?.closest<HTMLElement>("[data-inline-spoiler-group]");
+		const group = el?.dataset.inlineSpoilerGroup;
+		if (!group) return;
+
+		this.toggleGroup(group, true);
+	}
+
+	handleMouseOut(event: MouseEvent) {
+		const target = event.target as HTMLElement | null;
+		const el = target?.closest<HTMLElement>("[data-inline-spoiler-group]");
+		const group = el?.dataset.inlineSpoilerGroup;
+		if (!group) return;
+
+		const related = event.relatedTarget as HTMLElement | null;
+		if (related?.closest(`[data-inline-spoiler-group="${group}"]`)) {
+			return;  // still inside the same spoiler group
+		}
+
+		this.toggleGroup(group, false);
+	}
+
+	toggleGroup(group: string, reveal: boolean) {
+		const nodes = this.view.dom.querySelectorAll<HTMLElement>(`[data-inline-spoiler-group="${group}"]`);
+		nodes.forEach((node) => {
+			node.classList.toggle("inline_spoilers-editor-spoiler-hover", reveal);
+		});
+	}
 
 	buildDecorations(view: EditorView): DecorationSet {
 		const builder = new RangeSetBuilder<Decoration>();
-		const ranges: { from: number, to: number, isDelimiter: boolean }[] = [];
+		const ranges: { from: number, to: number, isDelimiter: boolean, group: string }[] = [];
+		const tree = syntaxTree(view.state);
+		const isDelimiterInIgnoredSyntax = (from: number, to: number) => {
+			const check = (pos: number) => {
+				let node: SyntaxNode | null = tree.resolveInner(pos);
+				while (node) {
+					const name = node.name;
+					if (name.includes("Code") || name.includes("Math") || name.includes("Comment") || name.includes("HTML")) {
+						return true;
+					}
+					node = node.parent;
+				}
+				return false;
+			};
+
+			const endPos = Math.max(to - 1, from);
+			return check(from) || check(endPos);
+		};
+		let groupId = 0;
 
 		for (const { from, to } of view.visibleRanges) {
-			syntaxTree(view.state).iterate({
-				from,
-				to,
-				enter(node) {
-					const text = view.state.sliceDoc(node.from, node.to);
-					let match: RegExpExecArray | null;
+			const text = view.state.sliceDoc(from, to);
+			SPOILER_REGEX.lastIndex = 0;  // reset per range to avoid bleed-over
+			let match: RegExpExecArray | null;
 
-					while ((match = SPOILER_REGEX.exec(text)) !== null) {
-						const start = match.index;
-						const end = start + match[0].length;
+			while ((match = SPOILER_REGEX.exec(text)) !== null) {
+				const start = from + match.index;
+				const end = start + match[0].length;
+				const group = `spoiler-${groupId++}`;
 
-						const text = view.state.sliceDoc(start, end);
+				const slice = view.state.sliceDoc(start, end);
 
-						if (!text.startsWith("||") && !text.endsWith("||")) {
-							continue;  // sanity check
-						}
+				if (!slice.startsWith("||") && !slice.endsWith("||")) {
+					continue;  // sanity check
+				}
 
-						ranges.push({ from: start, to: start + 2, isDelimiter: true });
-						ranges.push({ from: start + 2, to: end - 2, isDelimiter: false });
-						ranges.push({ from: end - 2, to: end, isDelimiter: true });
-					}
-				},
-			});
+				if (isDelimiterInIgnoredSyntax(start, start + 2) || isDelimiterInIgnoredSyntax(end - 2, end)) {
+					continue;  // skip spoilers inside code/math/html/comment nodes
+				}
+
+				ranges.push({ from: start, to: start + 2, isDelimiter: true, group });
+				ranges.push({ from: start + 2, to: end - 2, isDelimiter: false, group });
+				ranges.push({ from: end - 2, to: end, isDelimiter: true, group });
+			}
 		}
 
 		// Sort ranges by `from` position to prevent Codemirror error
@@ -139,7 +265,12 @@ class SpoilerEditorPlugin implements PluginValue {
 
 		// Add sorted ranges to the builder
 		for (const range of ranges) {
-			builder.add(range.from, range.to, range.isDelimiter ? spoilerDelimiterDecoration : spoilerDecoration);
+			const decoration = Decoration.mark({
+				class: range.isDelimiter ? "inline_spoilers-editor-spoiler-delimiter" : "inline_spoilers-editor-spoiler",
+				tagName: "span",
+				attributes: { "data-inline-spoiler-group": range.group },
+			});
+			builder.add(range.from, range.to, decoration);
 		}
 
 		return builder.finish();
