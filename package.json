@@ -7,10 +7,10 @@
 	"license": "GPL-3.0-or-later",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/logonoff/obsidian-inline-spoilers"
+		"url": "https://github.com/JuanZoran/obsidian-inline-spoilers"
 	},
 	"bugs": {
-		"url": "https://github.com/logonoff/obsidian-inline-spoilers/issues"
+		"url": "https://github.com/JuanZoran/obsidian-inline-spoilers/issues"
 	},
 	"keywords": [
 		"obsidian",
