@@ -311,11 +311,17 @@ const unloadEditorPlugin = (workspace: Workspace) => {
 interface InlineSpoilerPluginSettings {
 	showAllSpoilers: boolean;
 	enableEditorMode: boolean;
+	enableCustomStyle: boolean;
+	customColor: string;
+	blurAmount: number;
 }
 
 const DEFAULT_SETTINGS: InlineSpoilerPluginSettings = {
 	showAllSpoilers: false,
 	enableEditorMode: false,
+	enableCustomStyle: false,
+	customColor: "#a78bfa",
+	blurAmount: 2,
 }
 
 class InlineSpoilerPluginSettingsTab extends PluginSettingTab {
@@ -331,20 +337,25 @@ class InlineSpoilerPluginSettingsTab extends PluginSettingTab {
 
 		containerEl.empty();
 
+		const defaultColor = DEFAULT_SETTINGS.customColor;
+		let colorInput!: HTMLInputElement;
+
 		new Setting(containerEl)
-			.setName('Reveal all spoilers')
-			.setDesc('Always show all inline spoilers, regardless of whether they are clicked or not.')
+			.setName('显示全部 Spoiler')
+			.setDesc('无论是否点击，始终展示所有行内 Spoiler 内容。')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.showAllSpoilers)
 				.onChange(async (value) => {
 					this.plugin.settings.showAllSpoilers = value;
 					this.app.workspace.containerEl.toggleClass("inline_spoilers-revealed", value);
+					this.plugin.applyCustomStyle();  // 确保预览容器同步展示
+					this.plugin.refreshPreview?.();
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
-			.setName('Hide spoilers in editor view (experimental)')
-			.setDesc('Hide spoilers in the editor until your cursor is on the same line as the spoiler.')
+			.setName('编辑器中隐藏 Spoiler（实验性）')
+			.setDesc('在编辑器中将 Spoiler 文本模糊，光标与其同一行时再显示。')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.enableEditorMode)
 				.onChange(async (value) => {
@@ -356,8 +367,84 @@ class InlineSpoilerPluginSettingsTab extends PluginSettingTab {
 						unloadEditorPlugin(this.app.workspace);
 					}
 
+							await this.plugin.saveSettings();
+						}));
+
+		const customStyleSetting = new Setting(containerEl)
+			.setName('启用自定义 Spoiler 样式')
+			.setDesc('开启后可自定义遮罩与显色的基色。')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableCustomStyle)
+				.onChange(async (value) => {
+					this.plugin.settings.enableCustomStyle = value;
+					colorInput.disabled = !value;
+					this.plugin.applyCustomStyle();
+					this.plugin.refreshPreview?.();
 					await this.plugin.saveSettings();
 				}));
+
+		const colorSetting = new Setting(containerEl)
+			.setName('Spoiler 颜色')
+			.setDesc('用于遮罩与揭示时的基色。')
+			.addText(text => {
+				text.inputEl.type = "color";
+				colorInput = text.inputEl;
+				text.setValue(this.plugin.settings.customColor);
+				text.onChange(async (value) => {
+					this.plugin.settings.customColor = value || "#a78bfa";
+					this.plugin.applyCustomStyle();
+					this.plugin.refreshPreview?.();
+					await this.plugin.saveSettings();
+				});
+				return text;
+			})
+			.addExtraButton(button => {
+				button.setIcon("rotate-ccw");
+				button.setTooltip("恢复默认颜色");
+				button.onClick(async () => {
+					this.plugin.settings.customColor = defaultColor;
+					colorInput.value = defaultColor;
+					this.plugin.applyCustomStyle();
+					this.plugin.refreshPreview?.();
+					await this.plugin.saveSettings();
+				});
+			});
+
+		colorInput.disabled = !this.plugin.settings.enableCustomStyle;
+
+		new Setting(containerEl)
+			.setName('模糊程度')
+			.setDesc('设置 Spoiler 遮罩的模糊值（像素）。')
+			.addText(text => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "0";
+				text.inputEl.max = "10";
+				text.inputEl.step = "0.5";
+				text.setValue(String(this.plugin.settings.blurAmount));
+				text.onChange(async (value) => {
+					const num = Number(value);
+					const clamped = Number.isFinite(num) ? Math.min(10, Math.max(0, num)) : 2;
+					this.plugin.settings.blurAmount = clamped;
+					this.plugin.applyCustomStyle();
+					this.plugin.refreshPreview?.();
+					await this.plugin.saveSettings();
+				});
+			});
+
+		// 预览区域
+		const previewCard = containerEl.createDiv({ cls: "inline_spoilers-preview-card" });
+		previewCard.createDiv({ cls: "inline_spoilers-preview-title", text: "预览" });
+		const previewBody = previewCard.createDiv({ cls: "inline_spoilers-preview-body" });
+		const previewText = previewBody.createEl("p", { text: "示例显示当前配置下的 Spoiler 效果：" });
+		previewBody.createEl("span", { text: "在打开前，Spoiler 内容会被模糊。 " });
+		const previewSpoiler = previewBody.createEl("span", { cls: "inline_spoilers-spoiler", text: "这里是一段隐藏的 Spoiler 文本" });
+		previewBody.createEl("span", { text: " 其余文本正常显示。" });
+
+		this.plugin.registerDomEvent(previewSpoiler, 'click', () => {
+			previewSpoiler.classList.toggle("inline_spoilers-revealed");
+		});
+
+		this.plugin.attachPreview(previewCard);
 	}
 }
 
@@ -368,6 +455,7 @@ class InlineSpoilerPluginSettingsTab extends PluginSettingTab {
  */
 export default class InlineSpoilerPlugin extends Plugin {
 	settings!: InlineSpoilerPluginSettings;
+	private previewEl?: HTMLElement;
 
 	async onload() {
 		await this.loadSettings();
@@ -395,12 +483,15 @@ export default class InlineSpoilerPlugin extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new InlineSpoilerPluginSettingsTab(this.app, this));
+
+		this.applyCustomStyle();
 	}
 
 	onunload() {
 		this.app.workspace.containerEl.classList.remove("inline_spoilers-revealed");
 		unloadReadingMode(this.app.workspace);
 		unloadEditorPlugin(this.app.workspace);
+		this.clearCustomStyle(this.app.workspace.containerEl);
 	}
 
 	async loadSettings() {
@@ -413,5 +504,47 @@ export default class InlineSpoilerPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	private mixColor(color: string, alpha: number) {
+		const percentage = Math.round(alpha * 100);
+		return `color-mix(in srgb, ${color} ${percentage}%, transparent)`;
+	}
+
+	applyCustomStyle(target?: HTMLElement) {
+		const host = target ?? this.app.workspace.containerEl;
+		if (!host) return;
+
+		if (this.settings.enableCustomStyle) {
+			const baseColor = this.settings.customColor || "#a78bfa";
+			host.style.setProperty("--inline-spoilers-mask", this.mixColor(baseColor, 0.25));
+			host.style.setProperty("--inline-spoilers-hover-mask", this.mixColor(baseColor, 0.075));
+			host.style.setProperty("--inline-spoilers-text", baseColor);
+			host.style.setProperty("--inline-spoilers-text-revealed", baseColor);
+			host.style.setProperty("--inline-spoilers-blur", `${this.settings.blurAmount ?? 2}px`);
+			host.toggleClass("inline_spoilers-custom-enabled", true);
+		} else {
+			this.clearCustomStyle(host);
+		}
+	}
+
+	clearCustomStyle(target: HTMLElement) {
+		target.style.removeProperty("--inline-spoilers-mask");
+		target.style.removeProperty("--inline-spoilers-hover-mask");
+		target.style.removeProperty("--inline-spoilers-text");
+		target.style.removeProperty("--inline-spoilers-text-revealed");
+		target.style.removeProperty("--inline-spoilers-blur");
+		target.toggleClass("inline_spoilers-custom-enabled", false);
+	}
+
+	attachPreview(previewEl: HTMLElement) {
+		this.previewEl = previewEl;
+		this.refreshPreview();
+	}
+
+	refreshPreview() {
+		if (!this.previewEl) return;
+		this.previewEl.toggleClass("inline_spoilers-revealed", this.settings.showAllSpoilers);
+		this.applyCustomStyle(this.previewEl);
 	}
 }

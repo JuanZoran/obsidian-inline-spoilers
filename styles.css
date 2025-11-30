@@ -8,17 +8,17 @@
 .inline_spoilers-editor-spoiler,
 .inline_spoilers-editor-spoiler-delimiter {
 	/* obscured - glassmorphism blur effect */
-	background-color: hsla(var(--color-accent-hsl), 0.25) !important;
+	background-color: var(--inline-spoilers-mask, hsla(var(--color-accent-hsl), 0.25)) !important;
 	backdrop-filter: blur(8px) saturate(180%) !important;
 	-webkit-backdrop-filter: blur(8px) saturate(180%) !important;
-	filter: blur(2px) !important;
-	color: var(--text-normal) !important;
+	filter: blur(var(--inline-spoilers-blur, 2px)) !important;
+	color: var(--inline-spoilers-text, var(--text-normal)) !important;
 	opacity: 0.4 !important;
 	transition: all 0.2s ease !important;
 
 	> * {
 		/* fix for links */
-		color: var(--text-normal) !important;
+		color: var(--inline-spoilers-text, var(--text-normal)) !important;
 		text-decoration: none !important;
 		opacity: inherit !important;
 	}
@@ -28,15 +28,15 @@
 .inline_spoilers-spoiler:hover,
 .inline_spoilers-editor-spoiler:hover,
 .inline_spoilers-editor-spoiler-hover {
-	background-color: hsla(var(--color-accent-hsl), 0.075) !important;
+	background-color: var(--inline-spoilers-hover-mask, hsla(var(--color-accent-hsl), 0.075)) !important;
 	backdrop-filter: none !important;
 	-webkit-backdrop-filter: none !important;
 	filter: none !important;
 	opacity: 1 !important;
-	color: var(--text-accent) !important;
+	color: var(--inline-spoilers-text-revealed, var(--text-accent)) !important;
 
 	> * {
-		color: var(--text-accent) !important;
+		color: var(--inline-spoilers-text-revealed, var(--text-accent)) !important;
 		opacity: 1 !important;
 		text-decoration: unset !important;
 	}
@@ -55,11 +55,11 @@
 	-webkit-backdrop-filter: none !important;
 	filter: none !important;
 	opacity: 1 !important;
-	color: var(--text-accent) !important;
+	color: var(--inline-spoilers-text-revealed, var(--text-accent)) !important;
 
 	> * {
 		/* fix for links */
-		color: var(--text-accent) !important;
+		color: var(--inline-spoilers-text-revealed, var(--text-accent)) !important;
 		opacity: 1 !important;
 		text-decoration: unset !important;
 	}
@@ -97,4 +97,22 @@
 
 .is-live-preview .cm-active .inline_spoilers-editor-spoiler-delimiter {
 	display: unset;
+}
+
+.inline_spoilers-preview-card {
+	margin-top: 12px;
+	padding: 12px 14px;
+	border-radius: var(--radius-m);
+	background-color: rgba(255, 255, 255, 0.02);
+	border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.inline_spoilers-preview-title {
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+
+.inline_spoilers-preview-body {
+	font-size: 14px;
+	line-height: 1.5;
 }
